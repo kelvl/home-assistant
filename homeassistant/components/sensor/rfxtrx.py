@@ -48,7 +48,7 @@ def setup_platform(hass, config, add_devices_callback, discovery_info=None):
                     data_types = [data_type]
                     break
         for _data_type in data_types:
-            entity_id = generate_entity_id(ENTITY_ID_FORMAT, device_id, 
+            entity_id = generate_entity_id(ENTITY_ID_FORMAT, device_id,
                                            hass=hass)
             new_sensor = RfxtrxSensor(None, entity_info[ATTR_NAME], _data_type,
                                       entity_info[ATTR_FIREEVENT], entity_id)
@@ -105,7 +105,8 @@ def setup_platform(hass, config, add_devices_callback, discovery_info=None):
 class RfxtrxSensor(Entity):
     """Representation of a RFXtrx sensor."""
 
-    def __init__(self, event, name, data_type, should_fire_event=False, entity_id=None):
+    def __init__(self, event, name, data_type,
+                 should_fire_event=False, entity_id=None):
         """Initialize the sensor."""
         self.event = event
         self._name = name
