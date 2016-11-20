@@ -10,6 +10,7 @@ import socket
 import logging
 import os
 import select
+import time
 
 from aiohttp import web
 import voluptuous as vol
@@ -81,7 +82,7 @@ def setup(hass, yaml_config):
     )
 
     server.register_view(DescriptionXmlView(hass, config))
-    server.register_view(HueUsernameView(hass))
+    server.register_view(HueUsernameView(hass, config))
     server.register_view(HueLightsView(hass, config))
 
     upnp_listener = UPNPResponderThread(
@@ -195,15 +196,101 @@ class HueUsernameView(HomeAssistantView):
 
     url = '/api'
     name = 'hue:api'
-    extra_urls = ['/api/']
+    extra_urls = ['/api/', '/api/{username}']
     requires_auth = False
 
-    def __init__(self, hass):
+    def __init__(self, hass, config):
         """Initialize the instance of the view."""
         super().__init__(hass)
+        self.config = config
+        self.last_paired_time = 0
+
+    @core.callback
+    def async_get_lights_list(self):
+        """Process a request to get the list of available lights."""
+        json_response = {}
+
+        for i, entity in enumerate(self.hass.states.async_all()):
+            if self.is_entity_exposed(entity):
+                json_response[entity.entity_id.replace(".", "-")] = entity_to_json(entity)
+
+        return json_response
+
+    def is_entity_exposed(self, entity):
+        """Determine if an entity should be exposed on the emulated bridge.
+
+        Async friendly.
+        """
+        config = self.config
+
+        if entity.attributes.get('view') is not None:
+            # Ignore entities that are views
+            return False
+
+        domain = entity.domain.lower()
+        explicit_expose = entity.attributes.get(ATTR_EMULATED_HUE, None)
+
+        domain_exposed_by_default = \
+            config.expose_by_default and domain in config.exposed_domains
+
+        # Expose an entity if the entity's domain is exposed by default and
+        # the configuration doesn't explicitly exclude it from being
+        # exposed, or if the entity is explicitly exposed
+        is_default_exposed = \
+            domain_exposed_by_default and explicit_expose is not False
+
+        return is_default_exposed or explicit_expose
+
+    @core.callback
+    def get(self, request, username):
+        resp = {
+            "config": {
+                "UTC": "2016-11-20T00:37:21",
+                "apiversion": "1.15.0",
+                "bridgeid": "80E650FFFE1B7506",
+                "dhcp": True,
+                "factorynew": False,
+                "gateway": "192.168.1.148",
+                "ipaddress": "192.168.1.148",
+                "linkbutton": True,
+                "localtime": "2016-11-19T16:37:21",
+                "mac": "80:E6:50:1B:75:06",
+                "modelid": "BSB002",
+                "name": "Philips hue",
+                "netmask": "255.255.255.0",
+                "portalservices": False,
+                "proxyaddress": "none",
+                "proxyport": 0,
+                "swupdate": {
+                    "checkforupdate": False,
+                    "devicetypes": {},
+                    "notify": False,
+                    "text": "",
+                    "updatestate": 0,
+                    "url": ""
+                },
+                "swversion": "01035934",
+                "timezone": "America/Los_Angeles",
+                "whitelist": {
+                    "blar": {
+                        "createDate": "2016-11-19T16:37:21",
+                        "lastUseDate": "2016-11-19T16:37:21",
+                        "name": "auto insert user"
+                    }
+                },
+                "zigbeechannel": "6"
+            },
+            "groups": {},
+            "lights": self.async_get_lights_list(),
+            "rules": {},
+            "scenes": {},
+            "schedules": {},
+            "sensors": {}
+        }
+        return self.json(resp)
 
     @asyncio.coroutine
-    def post(self, request):
+    def post(self, request, username=None):
         """Handle a POST request."""
         try:
             data = yield from request.json()
@@ -213,8 +300,13 @@ class HueUsernameView(HomeAssistantView):
         if 'devicetype' not in data:
             return self.json_message('devicetype not specified',
                                      HTTP_BAD_REQUEST)
+        
+        if time.time() - self.last_paired_time < 5000:
+            return self.json_message('please wait 5 seconds', HTTP_BAD_REQUEST)
 
-        return self.json([{'success': {'username': '12345678901234567890'}}])
+        self.last_paired_time = time.time()
+
+        return self.json([{'success': {'username': '0123456789'}}])
 
 
 class HueLightsView(HomeAssistantView):
@@ -222,8 +314,8 @@ class HueLightsView(HomeAssistantView):
 
     url = '/api/{username}/lights'
     name = 'api:username:lights'
-    extra_urls = ['/api/{username}/lights/{entity_id}',
-                  '/api/{username}/lights/{entity_id}/state']
+    extra_urls = ['/api/{username}/lights/{assigned_id}',
+                  '/api/{username}/lights/{assigned_id}/state']
     requires_auth = False
 
     def __init__(self, hass, config):
@@ -231,12 +323,15 @@ class HueLightsView(HomeAssistantView):
         super().__init__(hass)
         self.config = config
         self.cached_states = {}
+        self.current_entities = {}
 
     @core.callback
-    def get(self, request, username, entity_id=None):
+    def get(self, request, username, assigned_id=None):
         """Handle a GET request."""
-        if entity_id is None:
+        if assigned_id is None:
             return self.async_get_lights_list()
+
+        entity_id = self.current_entities.get(assigned_id)
 
         if not request.path.endswith('state'):
             return self.async_get_light_state(entity_id)
@@ -244,10 +339,12 @@ class HueLightsView(HomeAssistantView):
         return web.Response(text="Method not allowed", status=405)
 
     @asyncio.coroutine
-    def put(self, request, username, entity_id=None):
+    def put(self, request, username, assigned_id=None):
         """Handle a PUT request."""
         if not request.path.endswith('state'):
             return web.Response(text="Method not allowed", status=405)
+
+        entity_id = self.current_entities.get(assigned_id)
 
         if entity_id and self.hass.states.get(entity_id) is None:
             return self.json_message('Entity not found', HTTP_NOT_FOUND)
@@ -263,13 +360,24 @@ class HueLightsView(HomeAssistantView):
     @core.callback
     def async_get_lights_list(self):
         """Process a request to get the list of available lights."""
-        json_response = {}
-
-        for entity in self.hass.states.async_all():
-            if self.is_entity_exposed(entity):
-                json_response[entity.entity_id] = entity_to_json(entity)
+        json_response = self.get_lights_and_assignments()
 
         return self.json(json_response)
+
+    @core.callback
+    def get_lights_and_assignments(self):
+        resp = {}
+        count = 1
+        self.current_entities = {}
+        for i, entity in enumerate(self.hass.states.async_all()):
+            if self.is_entity_exposed(entity):                
+                self.current_entities[count] = entity.entity_id
+                resp[count] = entity_to_json(entity)
+                count += 1
+
+        _LOGGER.info("Current assignment %r", self.current_entities)
+        return resp
+
 
     @core.callback
     def async_get_light_state(self, entity_id):
@@ -433,19 +541,43 @@ def entity_to_json(entity, is_on=None, brightness=None):
     name = entity.attributes.get(
         ATTR_EMULATED_HUE_NAME, entity.attributes[ATTR_FRIENDLY_NAME])
 
+    # return {
+    #     'state':
+    #     {
+    #         HUE_API_STATE_ON: is_on,
+    #         HUE_API_STATE_BRI: brightness,
+    #         'reachable': True
+    #     },
+    #     'type': 'Dimmable light',
+    #     'name': name,
+    #     'modelid': 'HASS123',
+    #     'uniqueid': entity.entity_id,
+    #     'swversion': '123'
+    # }
+
     return {
-        'state':
-        {
-            HUE_API_STATE_ON: is_on,
-            HUE_API_STATE_BRI: brightness,
-            'reachable': True
+        "manufacturername": "Philips",
+        "modelid": "LCT001",
+        "name": name,
+        "state": {
+            "alert": "none",
+            "bri": brightness,
+            "colormode": "hue",
+            "ct": 0,
+            "effect": "none",
+            "hue": 0,
+            "on": is_on,
+            "reachable": True,
+            "sat": 0,
+            "xy": [
+                0.0,
+                0.0
+            ]
         },
-        'type': 'Dimmable light',
-        'name': name,
-        'modelid': 'HASS123',
-        'uniqueid': entity.entity_id,
-        'swversion': '123'
-    }
+        "swversion": "66012040",
+        "type": "Extended color light",
+        "uniqueid": entity.entity_id
+     }
 
 
 def create_hue_success_response(entity_id, attr, value):
@@ -466,21 +598,54 @@ class UPNPResponderThread(threading.Thread):
         self.host_ip_addr = host_ip_addr
         self.listen_port = listen_port
 
-        # Note that the double newline at the end of
-        # this string is required per the SSDP spec
-        resp_template = """HTTP/1.1 200 OK
-CACHE-CONTROL: max-age=60
+        resp_templates = [
+            """HTTP/1.1 200 OK
+HOST: {host}:{port}
+CACHE-CONTROL: max-age=100
 EXT:
-LOCATION: http://{0}:{1}/description.xml
-SERVER: FreeRTOS/6.0.5, UPnP/1.0, IpBridge/0.1
+LOCATION: http://{host}:{port}/description.xml
+SERVER: Linux/3.14.0 UPnP/1.0 IpBridge/1.15.0 
+hue-bridgeid: {id}
+ST: upnp:rootdevice
+USN: uuid:2f402f80-da50-11e1-9b23-{uuid}::upnp:rootdevice
+
+""",
+            """HTTP/1.1 200 OK
+HOST: {host}:{port}
+CACHE-CONTROL: max-age=100
+EXT:
+LOCATION: http://{host}:{port}/description.xml
+SERVER: Linux/3.14.0 UPnP/1.0 IpBridge/1.15.0 
+hue-bridgeid: {id}
+ST: uuid:2f402f80-da50-11e1-9b23-{uuid}
+USN: uuid:2f402f80-da50-11e1-9b23-{uuid}
+
+""",
+            """HTTP/1.1 200 OK
+HOST: {host}:{port}
+CACHE-CONTROL: max-age=100
+EXT:
+LOCATION: http://{host}:{port}/description.xml
+SERVER: Linux/3.14.0 UPnP/1.0 IpBridge/1.15.0 
+hue-bridgeid: {id}
 ST: urn:schemas-upnp-org:device:basic:1
-USN: uuid:Socket-1_0-221438K0100073::urn:schemas-upnp-org:device:basic:1
+USN: uuid:2f402f80-da50-11e1-9b23-{uuid}
 
 """
+        ]
 
-        self.upnp_response = resp_template.format(host_ip_addr, listen_port) \
-                                          .replace("\n", "\r\n") \
-                                          .encode('utf-8')
+        uniq_id = '80E6501B7507'
+
+        self.upnp_responses = [
+            x.format(
+                host=host_ip_addr, 
+                port=listen_port, 
+                id=uniq_id[:6] + 'FFFE' + uniq_id[6:], 
+                uuid=uniq_id.lower()
+            ).replace("\n", "\r\n")
+            .encode('utf8') 
+            for x in resp_templates
+        ]
 
         # Set up a pipe for signaling to the receiver that it's time to
         # shutdown. Essentially, we place the SSDP socket into nonblocking
@@ -544,10 +709,12 @@ USN: uuid:Socket-1_0-221438K0100073::urn:schemas-upnp-org:device:basic:1
 
             if "M-SEARCH" in data.decode('utf-8'):
                 # SSDP M-SEARCH method received, respond to it with our info
+                _LOGGER.debug("UPNP received M-SEARCH request, send response %s", self.upnp_responses)
                 resp_socket = socket.socket(
                     socket.AF_INET, socket.SOCK_DGRAM)
 
-                resp_socket.sendto(self.upnp_response, addr)
+                for resp in self.upnp_responses:
+                    resp_socket.sendto(resp, addr)
                 resp_socket.close()
 
     def stop(self):
