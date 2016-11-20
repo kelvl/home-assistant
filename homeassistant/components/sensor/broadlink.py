@@ -89,5 +89,6 @@ class BroadlinkTemperatureSensor(Entity):
         """Retrieve latest state."""
         _LOGGER.info("Fetching temperature")
         celsius = self._device.check_temperature()
-        _LOGGER.info("Got temperature: %r", celsius)
-        self.current_value = celsius
+        if celsius < 100:
+            _LOGGER.info("Got temperature: %r", celsius)
+            self.current_value = celsius

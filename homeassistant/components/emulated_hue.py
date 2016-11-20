@@ -371,8 +371,8 @@ class HueLightsView(HomeAssistantView):
         self.current_entities = {}
         for i, entity in enumerate(self.hass.states.async_all()):
             if self.is_entity_exposed(entity):                
-                self.current_entities[count] = entity.entity_id
-                resp[count] = entity_to_json(entity)
+                self.current_entities[str(count)] = entity.entity_id
+                resp[str(count)] = entity_to_json(entity)
                 count += 1
 
         _LOGGER.info("Current assignment %r", self.current_entities)
@@ -403,7 +403,7 @@ class HueLightsView(HomeAssistantView):
     def async_put_light_state(self, request_json, entity_id):
         """Process a request to set the state of an individual light."""
         config = self.config
-
+        _LOGGER.info('RECEIVED HUE REQUEST %r - %r', entity_id, request_json)
         # Retrieve the entity from the state machine
         entity = self.hass.states.get(entity_id)
         if entity is None:
@@ -449,6 +449,14 @@ class HueLightsView(HomeAssistantView):
             # as the actual requested command.
             self.cached_states[entity_id] = (result, brightness)
 
+        parsed_output = parse_state_and_param(request_json, entity)
+
+        if parsed_output:
+            _LOGGER.info('OVERRIDE %r, %r', service, data)
+            service, data = parsed_output
+
+        _LOGGER.info("CALLING SERVICE %r, %r", service, data)
+
         # Perform the requested action
         yield from self.hass.services.async_call(core.DOMAIN, service, data,
                                                  blocking=True)
@@ -487,6 +495,26 @@ class HueLightsView(HomeAssistantView):
 
         return is_default_exposed or explicit_expose
 
+def parse_state_and_param(request_json, entity):
+    domain = entity.domain.lower()
+    data = {
+        'entity_id': entity.entity_id
+    } 
+    if domain == "group" or domain == "light":
+        if request_json.get('on'):
+            service = SERVICE_TURN_ON
+        else:
+            service = SERVICE_TURN_OFF
+               
+        if request_json.get('bri'):
+            data['brightness'] = int(request_json['bri'])
+        
+        if request_json.get('xy'):
+            data['xy_color'] = request_json['xy']
+        return service, data
+    if domain == "scene":
+        return (SERVICE_TURN_ON, data)
+    return None
 
 def parse_hue_api_put_light_body(request_json, entity):
     """Parse the body of a request to change the state of a light."""
