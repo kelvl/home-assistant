@@ -4,6 +4,7 @@ from asyncio import gather
 from collections.abc import Mapping
 import logging
 import pprint
+import re
 from typing import List, Optional
 
 from aiohttp.web import json_response
@@ -18,6 +19,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import Context, HomeAssistant, State, callback
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.service import async_call_from_config
 from homeassistant.helpers.storage import Store
 
 from . import trait
@@ -312,6 +314,146 @@ def get_google_type(domain, device_class):
     typ = DEVICE_CLASS_TO_GOOGLE_TYPES.get((domain, device_class))
 
     return typ if typ is not None else DOMAIN_TO_GOOGLE_TYPES[domain]
+
+
+# class AbstractEntity(ABC):
+#     """Base class for entities"""
+#     @abstractmethod
+#     async def sync_serialize(self, user_agent_id: str) -> dict:
+#         pass
+
+#     @property
+#     @abstractmethod
+#     def entity_id(self) -> str:
+#         """Return entity ID."""
+#         pass
+
+#     @callback
+#     @abstractmethod
+#     def query_serialize(self) -> dict:
+#         pass
+
+#     @abstractmethod
+#     async def execute(self, data, command_payload):
+#         pass
+
+#     @abstractmethod
+#     def async_update(self):
+#         pass
+
+
+class CustomGoogleEntity:
+    """CustomGoogleEntity for managing custom entities."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        config: AbstractConfig,
+        entity_id: str,
+        custom_entity_config: dict,
+    ):
+        """Initialize a Custom Google entity."""
+        self.hass = hass
+        self.entity_id = entity_id
+        self.config = config
+        self.custom_entity_config = custom_entity_config
+        self.challenge_type = self.custom_entity_config.get("challenge_type", "none")
+        self.state_templates = self.custom_entity_config.get("state_templates", {})
+        self.command_handlers = self.custom_entity_config.get("command_handlers", {})
+
+    async def sync_serialize(self, user_agent_id):
+        """Serialize entity for a SYNC response.
+
+        https://developers.google.com/actions/smarthome/create-app#actiondevicessync
+        """
+        device = {
+            "id": self.entity_id,
+            "type": self.custom_entity_config["type"],
+            "traits": self.custom_entity_config["traits"],
+            "name": {
+                "name": self.custom_entity_config["name"]["name"],
+                "defaultNames": self.custom_entity_config["name"]["default_names"]
+                or [],
+                "nicknames": self.custom_entity_config["name"]["nicknames"] or [],
+            },
+            "willReportState": False,
+            "attributes": self.custom_entity_config["attributes"],
+        }
+
+        # if self.config.is_local_sdk_active and self.should_expose_local():
+        #     device["otherDeviceIds"] = [{"deviceId": self.entity_id}]
+        #     device["customData"] = {
+        #         "webhookId": self.config.local_sdk_webhook_id,
+        #         "httpPort": self.hass.http.server_port,
+        #         "httpSSL": self.hass.config.api.use_ssl,
+        #         "baseUrl": self.hass.config.api.base_url,
+        #         "proxyDeviceId": agent_user_id,
+        #     }
+
+        return device
+
+    @callback
+    def query_serialize(self):
+        """Serialize entity for a QUERY response.
+
+        https://developers.google.com/actions/smarthome/create-app#actiondevicesquery
+        """
+        states = {}
+        for state, template in self.state_templates.items():
+            template.hass = self.hass
+            result = template.async_render()
+            coerced_result = result
+            coerced_result = True if result.strip() == "True" else coerced_result
+            coerced_result = False if result.strip() == "False" else coerced_result
+            coerced_result = (
+                float(result)
+                if re.fullmatch(
+                    r"[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?", result.strip()
+                )
+                else coerced_result
+            )
+            _LOGGER.debug(
+                "Rendered state %s with template %s to %s (coerced %s)",
+                state,
+                template,
+                result,
+                coerced_result,
+            )
+            states[state] = coerced_result
+
+        return states
+
+    async def execute(self, data, command_payload):
+        """Execute a command.
+
+        https://developers.google.com/actions/smarthome/create-app#actiondevicesexecute
+        """
+        command = command_payload["command"]
+        params = command_payload.get("params", {})
+        challenge = command_payload.get("challenge", {})
+
+        if self.challenge_type == "ack":
+            trait._verify_ack_challenge(data, None, challenge)
+        elif self.challenge_type == "pin":
+            trait._verify_pin_challenge(data, None, challenge)
+
+        command_handler = self.command_handlers.get(command)
+        if not command_handler:
+            return
+
+        _LOGGER.debug(
+            "Found handler for %s, calling from config with params: %s", command, params
+        )
+        _LOGGER.debug("command handler: %s", command_handler)
+        await async_call_from_config(
+            self.hass, command_handler, True, {"params": params}, False
+        )
+        return
+
+    @callback
+    def async_update(self):
+        """Update the entity with latest info from Home Assistant."""
+        return None
 
 
 class GoogleEntity:

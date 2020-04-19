@@ -22,6 +22,17 @@ DOMAIN = "google_assistant"
 
 GOOGLE_ASSISTANT_API_ENDPOINT = "/api/google_assistant"
 
+CONF_CUSTOM_ENTITY_CONFIG = "custom_entity_config"
+CONF_DEFAULT_NAMES = "default_names"
+CONF_NICKNAMES = "nicknames"
+CONF_TYPE = "type"
+CONF_TRAITS = "traits"
+CONF_CHALLENGE_TYPE = "challenge_type"
+CONF_WILL_REPORT_STATE = "will_report_state"
+CONF_ATTRIBUTES = "attributes"
+CONF_STATE_TEMPLATES = "state_templates"
+CONF_COMMAND_HANDLERS = "command_handlers"
+
 CONF_EXPOSE = "expose"
 CONF_ENTITY_CONFIG = "entity_config"
 CONF_EXPOSE_BY_DEFAULT = "expose_by_default"
@@ -36,6 +47,10 @@ CONF_REPORT_STATE = "report_state"
 CONF_SERVICE_ACCOUNT = "service_account"
 CONF_CLIENT_EMAIL = "client_email"
 CONF_PRIVATE_KEY = "private_key"
+
+CHALLENGE_TYPE_NONE = "none"
+CHALLENGE_TYPE_ACK = "ack"
+CHALLENGE_TYPE_PIN = "pin"
 
 DEFAULT_EXPOSE_BY_DEFAULT = True
 DEFAULT_EXPOSED_DOMAINS = [

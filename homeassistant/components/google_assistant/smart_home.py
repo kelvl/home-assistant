@@ -1,6 +1,6 @@
 """Support for Google Assistant Smart Home API."""
 import asyncio
-from itertools import product
+from itertools import chain, product
 import logging
 
 from homeassistant.const import ATTR_ENTITY_ID, __version__
@@ -15,7 +15,7 @@ from .const import (
     EVENT_SYNC_RECEIVED,
 )
 from .error import SmartHomeError
-from .helpers import GoogleEntity, RequestData, async_get_entities
+from .helpers import CustomGoogleEntity, GoogleEntity, RequestData, async_get_entities
 
 HANDLERS = Registry()
 _LOGGER = logging.getLogger(__name__)
@@ -70,6 +70,13 @@ async def _process(hass, data, message):
     return {"requestId": data.request_id, "payload": result}
 
 
+def custom_entity_sync_generator(hass, data, agent_user_id):
+    """Generate sync serialize for custom entities."""
+    for custom_entity_id, custom_entity in data.config.custom_entities.items():
+        entity = CustomGoogleEntity(hass, data.config, custom_entity_id, custom_entity)
+        yield entity.sync_serialize(agent_user_id)
+
+
 @HANDLERS.register("action.devices.SYNC")
 async def async_devices_sync(hass, data, payload):
     """Handle action.devices.SYNC request.
@@ -84,12 +91,14 @@ async def async_devices_sync(hass, data, payload):
 
     agent_user_id = data.config.get_agent_user_id(data.context)
 
+    entities = (
+        entity.sync_serialize(agent_user_id)
+        for entity in async_get_entities(hass, data.config)
+        if entity.should_expose()
+    )
+
     devices = await asyncio.gather(
-        *(
-            entity.sync_serialize(agent_user_id)
-            for entity in async_get_entities(hass, data.config)
-            if entity.should_expose()
-        )
+        *chain(entities, custom_entity_sync_generator(hass, data, agent_user_id))
     )
 
     response = {"agentUserId": agent_user_id, "devices": devices}
@@ -110,7 +119,6 @@ async def async_devices_query(hass, data, payload):
     devices = {}
     for device in payload.get("devices", []):
         devid = device["id"]
-        state = hass.states.get(devid)
 
         hass.bus.async_fire(
             EVENT_QUERY_RECEIVED,
@@ -122,6 +130,14 @@ async def async_devices_query(hass, data, payload):
             context=data.context,
         )
 
+        if devid in data.config.custom_entities.keys():
+            entity = CustomGoogleEntity(
+                hass, data.config, devid, data.config.custom_entities[devid]
+            )
+            devices[devid] = entity.query_serialize()
+            continue
+
+        state = hass.states.get(devid)
         if not state:
             # If we can't find a state, the device is offline
             devices[devid] = {"online": False}
@@ -184,17 +200,23 @@ async def handle_devices_execute(hass, data, payload):
                 executions[entity_id].append(execution)
                 continue
 
-            state = hass.states.get(entity_id)
+            if entity_id in data.config.custom_entities.keys():
+                entities[entity_id] = CustomGoogleEntity(
+                    hass, data.config, entity_id, data.config.custom_entities[entity_id]
+                )
+            else:
+                state = hass.states.get(entity_id)
 
-            if state is None:
-                results[entity_id] = {
-                    "ids": [entity_id],
-                    "status": "ERROR",
-                    "errorCode": ERR_DEVICE_OFFLINE,
-                }
-                continue
+                if state is None:
+                    results[entity_id] = {
+                        "ids": [entity_id],
+                        "status": "ERROR",
+                        "errorCode": ERR_DEVICE_OFFLINE,
+                    }
+                    continue
+                else:
+                    entities[entity_id] = GoogleEntity(hass, data.config, state)
 
-            entities[entity_id] = GoogleEntity(hass, data.config, state)
             executions[entity_id] = [execution]
 
     execute_results = await asyncio.gather(

@@ -10,20 +10,33 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    CHALLENGE_TYPE_ACK,
+    CHALLENGE_TYPE_NONE,
+    CHALLENGE_TYPE_PIN,
     CONF_ALIASES,
     CONF_ALLOW_UNLOCK,
     CONF_API_KEY,
+    CONF_ATTRIBUTES,
+    CONF_CHALLENGE_TYPE,
     CONF_CLIENT_EMAIL,
+    CONF_COMMAND_HANDLERS,
+    CONF_CUSTOM_ENTITY_CONFIG,
+    CONF_DEFAULT_NAMES,
     CONF_ENTITY_CONFIG,
     CONF_EXPOSE,
     CONF_EXPOSE_BY_DEFAULT,
     CONF_EXPOSED_DOMAINS,
+    CONF_NICKNAMES,
     CONF_PRIVATE_KEY,
     CONF_PROJECT_ID,
     CONF_REPORT_STATE,
     CONF_ROOM_HINT,
     CONF_SECURE_DEVICES_PIN,
     CONF_SERVICE_ACCOUNT,
+    CONF_STATE_TEMPLATES,
+    CONF_TRAITS,
+    CONF_TYPE,
+    CONF_WILL_REPORT_STATE,
     DEFAULT_EXPOSE_BY_DEFAULT,
     DEFAULT_EXPOSED_DOMAINS,
     DOMAIN,
@@ -43,6 +56,32 @@ ENTITY_SCHEMA = vol.Schema(
         vol.Optional(CONF_ALIASES): vol.All(cv.ensure_list, [cv.string]),
         vol.Optional(CONF_ROOM_HINT): cv.string,
     }
+)
+
+CUSTOM_ENTITY_NAME_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_NAME): cv.string,
+        vol.Optional(CONF_DEFAULT_NAMES, default=[]): vol.All(
+            cv.ensure_list, [cv.string]
+        ),
+        vol.Optional(CONF_NICKNAMES, default=[]): vol.All(cv.ensure_list, [cv.string]),
+    }
+)
+
+CUSTOM_ENTITY_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_NAME): CUSTOM_ENTITY_NAME_SCHEMA,
+        vol.Required(CONF_TYPE): cv.string,
+        vol.Required(CONF_TRAITS): vol.All(cv.ensure_list, [cv.string]),
+        vol.Optional(CONF_CHALLENGE_TYPE, default=CHALLENGE_TYPE_NONE): vol.In(
+            [CHALLENGE_TYPE_ACK, CHALLENGE_TYPE_NONE, CHALLENGE_TYPE_PIN]
+        ),
+        vol.Required(CONF_WILL_REPORT_STATE): cv.boolean,
+        vol.Required(CONF_ATTRIBUTES): dict,
+        vol.Required(CONF_STATE_TEMPLATES): vol.Schema({str: cv.template}),
+        vol.Required(CONF_COMMAND_HANDLERS): vol.Schema({str: cv.SERVICE_SCHEMA}),
+    },
+    extra=vol.PREVENT_EXTRA,
 )
 
 GOOGLE_SERVICE_ACCOUNT = vol.Schema(
@@ -77,6 +116,7 @@ GOOGLE_ASSISTANT_SCHEMA = vol.All(
             ): cv.ensure_list,
             vol.Optional(CONF_API_KEY): cv.string,
             vol.Optional(CONF_ENTITY_CONFIG): {cv.entity_id: ENTITY_SCHEMA},
+            vol.Optional(CONF_CUSTOM_ENTITY_CONFIG): {cv.string: CUSTOM_ENTITY_SCHEMA},
             vol.Optional(CONF_ALLOW_UNLOCK): cv.boolean,
             # str on purpose, makes sure it is configured correctly.
             vol.Optional(CONF_SECURE_DEVICES_PIN): str,

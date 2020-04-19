@@ -17,6 +17,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_API_KEY,
     CONF_CLIENT_EMAIL,
+    CONF_CUSTOM_ENTITY_CONFIG,
     CONF_ENTITY_CONFIG,
     CONF_EXPOSE,
     CONF_EXPOSE_BY_DEFAULT,
@@ -86,6 +87,11 @@ class GoogleConfig(AbstractConfig):
     def entity_config(self):
         """Return entity config."""
         return self._config.get(CONF_ENTITY_CONFIG) or {}
+
+    @property
+    def custom_entities(self):
+        """Return custom entity config."""
+        return self._config.get(CONF_CUSTOM_ENTITY_CONFIG) or {}
 
     @property
     def secure_devices_pin(self):
